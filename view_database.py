@@ -27,7 +27,7 @@ def view_database():
         print(f"   • ID: {user.id}")
         print(f"     Email: {user.email}")
         print(f"     Approved: {user.is_approved}")
-        print(f"     Admin: {user.is_admin}")
+        print(f"     User: {user.is_user}")
         print(f"     Superuser: {user.is_superuser}")
         print(f"     Created: {user.created_at}")
         if user.approval_date:
@@ -52,15 +52,16 @@ def view_database():
     print("\n4️⃣  Approved Users:")
     approved_users = User.objects.filter(is_approved=True)
     for user in approved_users:
-        print(f"   • {user.email} (Admin: {user.is_admin})")
+        print(f"   • {user.email} (User: {user.is_user})")
     
     print(f"\n📊 SUMMARY:")
     print(f"   Total Users: {User.objects.count()}")
     print(f"   Pending Users: {pending_users.count()}")
     print(f"   Approved Users: {approved_users.count()}")
-    print(f"   Admin Users: {User.objects.filter(is_admin=True).count()}")
+    print(f"   User Role Users: {User.objects.filter(is_user=True).count()}")
     print(f"   Superusers: {User.objects.filter(is_superuser=True).count()}")
     print(f"   Active Tokens: {Token.objects.count()}")
 
 if __name__ == "__main__":
     view_database()
+    

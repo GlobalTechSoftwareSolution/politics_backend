@@ -3,8 +3,10 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
 from django.contrib.auth import authenticate
 from django.contrib.auth import get_user_model
+from django.utils import timezone
 User = get_user_model()
-from .serializers import UserSerializer, UserRegistrationSerializer, UserApprovalSerializer
+from .serializers import UserSerializer, UserRegistrationSerializer, UserApprovalSerializer, PendingInfoSerializer, ActiveInfoSerializer
+from .models import PendingInfo, ActiveInfo
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 
@@ -24,7 +26,7 @@ def require_admin(func):
         user = get_current_user_from_session(request)
         if not user:
             return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-        if not user.is_admin and not user.is_superuser:
+        if not user.is_user and not user.is_superuser:
             return Response({'error': 'Admin privileges required'}, status=status.HTTP_403_FORBIDDEN)
         return func(request, user, *args, **kwargs)
     return wrapper
@@ -129,4 +131,131 @@ def protected_endpoint(request):
     return Response({
         'message': 'Welcome to the protected area!',
         'note': 'Authentication removed - no JWT tokens required'
+    })
+
+@api_view(['POST'])
+def submit_info(request):
+    """Submit information for approval"""
+    user = get_current_user_from_session(request)
+    if not user:
+        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if not user.is_approved:
+        return Response({'error': 'Account not approved yet'}, status=status.HTTP_403_FORBIDDEN)
+    
+    # Handle both JSON and multipart form data (for file uploads)
+    if request.content_type and 'multipart/form-data' in request.content_type:
+        # Multipart form data (file upload)
+        serializer = PendingInfoSerializer(data=request.data)
+    else:
+        # JSON data
+        serializer = PendingInfoSerializer(data=request.data)
+    
+    if serializer.is_valid():
+        # Check if user is superuser or admin - if so, approve directly
+        if user.can_approve_users():
+            # Superuser/admin: Create ActiveInfo directly
+            active_info = ActiveInfo.objects.create(
+                heading=serializer.validated_data['heading'],
+                description=serializer.validated_data['description'],
+                image=serializer.validated_data.get('image'),
+                submitted_by=user,
+                approved_by=user,
+                approved_at=timezone.now()
+            )
+            return Response({
+                'message': 'Information submitted and approved directly (admin privilege)',
+                'active_info': ActiveInfoSerializer(active_info).data
+            }, status=status.HTTP_201_CREATED)
+        else:
+            # Regular user: Create PendingInfo
+            pending_info = serializer.save(submitted_by=user)
+            return Response({
+                'message': 'Information submitted successfully for approval',
+                'pending_info': PendingInfoSerializer(pending_info).data
+            }, status=status.HTTP_201_CREATED)
+    
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+def get_pending_info(request):
+    """Get all pending information (Admin only)"""
+    user = get_current_user_from_session(request)
+    if not user:
+        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if not user.can_approve_users():
+        return Response({'error': 'Admin privileges required'}, status=status.HTTP_403_FORBIDDEN)
+    
+    pending_info = PendingInfo.objects.filter(status='pending').order_by('-submitted_at')
+    serializer = PendingInfoSerializer(pending_info, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def get_active_info(request):
+    """Get all active/approved information (Available to all approved users)"""
+    user = get_current_user_from_session(request)
+    if not user:
+        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if not user.is_approved:
+        return Response({'error': 'Account not approved yet'}, status=status.HTTP_403_FORBIDDEN)
+    
+    active_info = ActiveInfo.objects.all().order_by('-approved_at')
+    serializer = ActiveInfoSerializer(active_info, many=True)
+    return Response(serializer.data)
+
+@api_view(['POST'])
+@require_admin
+def approve_info(request, user, info_id):
+    """Approve pending information (Admin only)"""
+    try:
+        pending_info = PendingInfo.objects.get(id=info_id, status='pending')
+        pending_info.approve(approved_by=user)
+        return Response({
+            'message': 'Information approved successfully',
+            'pending_info': PendingInfoSerializer(pending_info).data
+        })
+    except PendingInfo.DoesNotExist:
+        return Response({'error': 'Pending information not found or already processed'}, status=status.HTTP_404_NOT_FOUND)
+    except PermissionError as e:
+        return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
+
+@api_view(['POST'])
+@require_admin
+def reject_info(request, user, info_id):
+    """Reject pending information (Admin only)"""
+    try:
+        pending_info = PendingInfo.objects.get(id=info_id, status='pending')
+        pending_info.reject(rejected_by=user)
+        return Response({
+            'message': 'Information rejected successfully',
+            'pending_info': PendingInfoSerializer(pending_info).data
+        })
+    except PendingInfo.DoesNotExist:
+        return Response({'error': 'Pending information not found or already processed'}, status=status.HTTP_404_NOT_FOUND)
+    except PermissionError as e:
+        return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
+
+@api_view(['GET'])
+def get_my_submissions(request):
+    """Get current user's submissions"""
+    user = get_current_user_from_session(request)
+    if not user:
+        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    if not user.is_approved:
+        return Response({'error': 'Account not approved yet'}, status=status.HTTP_403_FORBIDDEN)
+    
+    # Get pending submissions
+    pending_submissions = PendingInfo.objects.filter(submitted_by=user).order_by('-submitted_at')
+    pending_serializer = PendingInfoSerializer(pending_submissions, many=True)
+    
+    # Get approved submissions
+    approved_submissions = ActiveInfo.objects.filter(submitted_by=user).order_by('-approved_at')
+    approved_serializer = ActiveInfoSerializer(approved_submissions, many=True)
+    
+    return Response({
+        'pending_submissions': pending_serializer.data,
+        'approved_submissions': approved_serializer.data
     })
