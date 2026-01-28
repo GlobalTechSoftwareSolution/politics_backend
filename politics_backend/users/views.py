@@ -16,11 +16,16 @@ def require_admin(func):
         if not password:
             return Response({'error': 'Password required for admin operations'}, status=status.HTTP_400_BAD_REQUEST)
         
-        # Get superuser (we know the superuser email)
+        # Get email from request data
+        email = request.data.get('email')
+        if not email:
+            return Response({'error': 'Email required for admin operations'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get user by email
         try:
-            user = User.objects.get(email='superuser@gmail.com')
+            user = User.objects.get(email=email)
         except User.DoesNotExist:
-            return Response({'error': 'Superuser not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
         
         # Verify password
         if not user.check_password(password):
@@ -74,13 +79,15 @@ def login_user(request):
 
 @api_view(['GET'])
 def get_user_profile(request):
-    """Get current user profile - Requires password"""
+    """Get current user profile - Requires email and password"""
+    email = request.data.get('email')
     password = request.data.get('password')
-    if not password:
-        return Response({'error': 'Password required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    if not email or not password:
+        return Response({'error': 'Email and password required'}, status=status.HTTP_400_BAD_REQUEST)
     
     try:
-        user = User.objects.get(email='superuser@gmail.com')
+        user = User.objects.get(email=email)
         if not user.check_password(password):
             return Response({'error': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
         
@@ -113,9 +120,29 @@ def approve_user(request, user, user_id):
         return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
 @api_view(['GET'])
-@require_admin
-def get_pending_users(request, user):
+@permission_classes([permissions.AllowAny])
+def get_pending_users(request):
     """Get list of users waiting for approval (Admin only) - Session based, no JWT"""
+    # Get password from request headers
+    password = request.headers.get('X-Admin-Password')
+    if not password:
+        return Response({'error': 'Admin password required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get email from request headers
+    email = request.headers.get('X-Admin-Email')
+    if not email:
+        return Response({'error': 'Admin email required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get user by email
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Verify password
+    if not user.check_password(password):
+        return Response({'error': 'Invalid admin password'}, status=status.HTTP_401_UNAUTHORIZED)
+    
     # Only superusers and admins can view pending users
     if not user.can_approve_users():
         return Response({
@@ -187,15 +214,41 @@ def submit_info(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET'])
-@require_admin
-def get_pending_info(request, user):
+@permission_classes([permissions.AllowAny])
+def get_pending_info(request):
     """Get all pending information (Admin only)"""
+    # Get password from request headers
+    password = request.headers.get('X-Admin-Password')
+    if not password:
+        return Response({'error': 'Admin password required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get email from request headers
+    email = request.headers.get('X-Admin-Email')
+    if not email:
+        return Response({'error': 'Admin email required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Get user by email
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+    
+    # Verify password
+    if not user.check_password(password):
+        return Response({'error': 'Invalid admin password'}, status=status.HTTP_401_UNAUTHORIZED)
+    
+    # Only superusers and admins can view pending info
+    if not user.can_approve_users():
+        return Response({
+            'error': 'Only superusers and admins can view pending information'
+        }, status=status.HTTP_403_FORBIDDEN)
     
     pending_info = PendingInfo.objects.filter(status='pending').order_by('-submitted_at')
     serializer = PendingInfoSerializer(pending_info, many=True)
     return Response(serializer.data)
 
 @api_view(['GET'])
+@permission_classes([permissions.AllowAny])
 def get_active_info(request):
     """Get all active/approved information (Available to all approved users)"""
     # For regular users, just require email and password
@@ -249,6 +302,7 @@ def reject_info(request, user, info_id):
         return Response({'error': str(e)}, status=status.HTTP_403_FORBIDDEN)
 
 @api_view(['GET'])
+@permission_classes([permissions.AllowAny])
 def get_my_submissions(request):
     """Get current user's submissions"""
     # For regular users, just require email and password
