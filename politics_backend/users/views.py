@@ -7,27 +7,29 @@ from django.utils import timezone
 User = get_user_model()
 from .serializers import UserSerializer, UserRegistrationSerializer, UserApprovalSerializer, PendingInfoSerializer, ActiveInfoSerializer
 from .models import PendingInfo, ActiveInfo
-from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
-
-def get_current_user_from_session(request):
-    """Get current user from session (no JWT)"""
-    user_id = request.session.get('user_id')
-    if user_id:
-        try:
-            return User.objects.get(id=user_id)
-        except User.DoesNotExist:
-            return None
-    return None
 
 def require_admin(func):
-    """Decorator to require admin privileges (session-based)"""
+    """Decorator to require admin privileges (password-based, no cookies/tokens)"""
     def wrapper(request, *args, **kwargs):
-        user = get_current_user_from_session(request)
-        if not user:
-            return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+        # Get password from request data
+        password = request.data.get('password')
+        if not password:
+            return Response({'error': 'Password required for admin operations'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Get superuser (we know the superuser email)
+        try:
+            user = User.objects.get(email='superuser@gmail.com')
+        except User.DoesNotExist:
+            return Response({'error': 'Superuser not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Verify password
+        if not user.check_password(password):
+            return Response({'error': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
+        
+        # Check if user has admin privileges
         if not user.is_user and not user.is_superuser:
             return Response({'error': 'Admin privileges required'}, status=status.HTTP_403_FORBIDDEN)
+        
         return func(request, user, *args, **kwargs)
     return wrapper
 
@@ -47,7 +49,7 @@ def register_user(request):
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def login_user(request):
-    """User login endpoint - Session based, no JWT tokens"""
+    """User login endpoint - Simple password authentication"""
     email = request.data.get('email')
     password = request.data.get('password')
     
@@ -62,33 +64,33 @@ def login_user(request):
                 'error': 'Account not approved yet. Please contact admin for approval.'
             }, status=status.HTTP_403_FORBIDDEN)
         
-        # Set session-based authentication (no JWT)
-        request.session['user_id'] = user.id
-        request.session['user_email'] = user.email
-        
         return Response({
             'message': 'Login successful',
             'user': UserSerializer(user).data,
-            'note': 'Session-based authentication - no JWT tokens'
+            'note': 'Simple password authentication - no cookies or tokens'
         })
     else:
         return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
 
 @api_view(['GET'])
 def get_user_profile(request):
-    """Get current user profile"""
-    user = get_current_user_from_session(request)
-    if user:
+    """Get current user profile - Requires password"""
+    password = request.data.get('password')
+    if not password:
+        return Response({'error': 'Password required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        user = User.objects.get(email='superuser@gmail.com')
+        if not user.check_password(password):
+            return Response({'error': 'Invalid password'}, status=status.HTTP_401_UNAUTHORIZED)
+        
         return Response({
             'message': 'User profile retrieved successfully',
             'user': UserSerializer(user).data,
-            'note': 'Session-based authentication working'
+            'note': 'Password-based authentication working'
         })
-    else:
-        return Response({
-            'message': 'No user logged in',
-            'note': 'Please login to view profile'
-        })
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
 @api_view(['POST'])
 @require_admin
@@ -136,9 +138,16 @@ def protected_endpoint(request):
 @api_view(['POST'])
 def submit_info(request):
     """Submit information for approval"""
-    user = get_current_user_from_session(request)
+    # For regular users, just require email and password
+    email = request.data.get('email')
+    password = request.data.get('password')
+    
+    if not email or not password:
+        return Response({'error': 'Email and password required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    user = authenticate(request, username=email, password=password)
     if not user:
-        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
     
     if not user.is_approved:
         return Response({'error': 'Account not approved yet'}, status=status.HTTP_403_FORBIDDEN)
@@ -178,14 +187,9 @@ def submit_info(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET'])
-def get_pending_info(request):
+@require_admin
+def get_pending_info(request, user):
     """Get all pending information (Admin only)"""
-    user = get_current_user_from_session(request)
-    if not user:
-        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
-    
-    if not user.can_approve_users():
-        return Response({'error': 'Admin privileges required'}, status=status.HTTP_403_FORBIDDEN)
     
     pending_info = PendingInfo.objects.filter(status='pending').order_by('-submitted_at')
     serializer = PendingInfoSerializer(pending_info, many=True)
@@ -194,9 +198,16 @@ def get_pending_info(request):
 @api_view(['GET'])
 def get_active_info(request):
     """Get all active/approved information (Available to all approved users)"""
-    user = get_current_user_from_session(request)
+    # For regular users, just require email and password
+    email = request.data.get('email')
+    password = request.data.get('password')
+    
+    if not email or not password:
+        return Response({'error': 'Email and password required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    user = authenticate(request, username=email, password=password)
     if not user:
-        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
     
     if not user.is_approved:
         return Response({'error': 'Account not approved yet'}, status=status.HTTP_403_FORBIDDEN)
@@ -240,9 +251,16 @@ def reject_info(request, user, info_id):
 @api_view(['GET'])
 def get_my_submissions(request):
     """Get current user's submissions"""
-    user = get_current_user_from_session(request)
+    # For regular users, just require email and password
+    email = request.data.get('email')
+    password = request.data.get('password')
+    
+    if not email or not password:
+        return Response({'error': 'Email and password required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    user = authenticate(request, username=email, password=password)
     if not user:
-        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'error': 'Invalid credentials'}, status=status.HTTP_401_UNAUTHORIZED)
     
     if not user.is_approved:
         return Response({'error': 'Account not approved yet'}, status=status.HTTP_403_FORBIDDEN)

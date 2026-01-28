@@ -21,4 +21,5 @@ urlpatterns = [
     path('api/approve-info/<int:info_id>/', views.approve_info, name='approve_info'),
     path('api/reject-info/<int:info_id>/', views.reject_info, name='reject_info'),
     path('api/my-submissions/', views.get_my_submissions, name='my_submissions'),
+    
 ]
